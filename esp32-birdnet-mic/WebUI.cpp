@@ -42,7 +42,6 @@ extern uint32_t currentSampleRate;
 extern float currentGainFactor;
 extern uint16_t currentBufferSize;
 extern uint8_t i2sShiftBits;
-extern uint8_t micFormat;
 extern uint32_t minAcceptableRate;
 extern uint32_t performanceCheckInterval;
 extern bool autoRecoveryEnabled;
@@ -74,7 +73,6 @@ extern bool overheatLatched;
 struct StreamProfileConfig { uint8_t target; };
 extern StreamProfileConfig streamProfiles[2];
 extern bool streamEnabled[2];
-extern uint8_t maxActiveClients;
 struct StreamStats { uint8_t clientCount; bool streaming; uint32_t packetsSent; unsigned long statsResetMs; unsigned long lastConnectMs; unsigned long lastPlayMs; };
 extern StreamStats streamStats[2];
 extern void getStreamClientCounts(uint8_t &s1, uint8_t &s2);
@@ -123,7 +121,6 @@ extern String formatUptime(unsigned long seconds);
 extern String formatSince(unsigned long eventMs);
 extern bool restartI2S();
 extern bool applyAudioConfig(uint32_t newRate, float newGain, uint16_t newBuffer, uint8_t newShift);
-extern bool applyMicFormatConfig(uint8_t newFormat);
 extern uint16_t maxHighpassCutoffForRate(uint32_t sampleRate);
 extern void saveAudioSettings();
 extern void applyWifiTxPower(bool log);
@@ -855,7 +852,6 @@ static void httpStatus() {
     json += "\"stream2_target\":" + String((uint32_t)streamProfiles[1].target) + ",";
     json += "\"stream1_enabled\":" + String(streamEnabled[0]?"true":"false") + ",";
     json += "\"stream2_enabled\":" + String(streamEnabled[1]?"true":"false") + ",";
-    json += "\"max_clients\":" + String((uint32_t)maxActiveClients) + ",";
     // Per-stream client counts
     uint8_t s1clients = 0, s2clients = 0;
     getStreamClientCounts(s1clients, s2clients);
@@ -920,7 +916,6 @@ static void httpAudioStatus() {
     json += "\"gain\":" + String(currentGainFactor,2) + ",";
     json += "\"buffer_size\":" + String(currentBufferSize) + ",";
     json += "\"i2s_shift\":" + String(i2sShiftBits) + ",";
-    json += "\"mic_format\":" + String(micFormat) + ",";
     json += "\"latency_ms\":" + String(latency_ms,1) + ",";
     extern bool highpassEnabled; extern uint16_t highpassCutoffHz;
     json += "\"profile\":\"" + jsonEscape(profileName(currentBufferSize)) + "\",";
@@ -1223,14 +1218,6 @@ static bool applyAndSaveAudio(uint32_t newRate, float newGain, uint16_t newBuffe
     return false;
 }
 
-static bool applyAndSaveMicFormat(uint8_t newFormat) {
-    if (applyMicFormatConfig(newFormat)) {
-        saveAudioSettings();
-        return true;
-    }
-    return false;
-}
-
 static void httpSet() {
     if (!requireMutationAuth()) return;
 
@@ -1276,13 +1263,6 @@ static void httpSet() {
         uint8_t v;
         if (argToUChar(v) && v <= 24) {
             applied = applyAndSaveAudio(currentSampleRate, currentGainFactor, currentBufferSize, v);
-        }
-    }
-    else if (key == "mic_format") {
-        handled = true;
-        uint8_t v;
-        if (argToUChar(v) && v <= 1) {
-            applied = applyAndSaveMicFormat(v);
         }
     }
     else if (key == "wifi_tx") {
@@ -1527,11 +1507,6 @@ static void httpSet() {
         handled = true;
         String v = web.arg("value");
         if (v == "on" || v == "off") { streamEnabled[1] = (v == "on"); saveAudioSettings(); applied = true; }
-    }
-    else if (key == "max_clients") {
-        handled = true;
-        uint32_t v;
-        if (argToUInt(v) && v >= 1 && v <= 3) { maxActiveClients = (uint8_t)v; saveAudioSettings(); applied = true; }
     }
 
     if (!handled) {

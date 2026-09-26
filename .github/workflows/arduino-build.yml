@@ -5,37 +5,23 @@ on:
   pull_request:
 
 jobs:
-  ota-contract:
+  unit-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate OTA release contract
+      - name: Run sketch/web UI unit tests
         run: |
-          python3 tests/validate_ota_contract.py
           node tests/webui_health_test.js
-          python3 -m unittest discover -s tests -p 'test_*.py'
           g++ -std=c++11 -Wall -Wextra -Werror tests/discovery_progress_test.cpp -o /tmp/discovery-test
           /tmp/discovery-test
           g++ -std=c++11 -Wall -Wextra -Werror -Itests/stubs tests/discovery_client_test.cpp -o /tmp/discovery-client-test
           /tmp/discovery-client-test
 
   compile:
-    needs: ota-contract
+    needs: unit-tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: XIAO ESP32-C3
-            fqbn: esp32:esp32:XIAO_ESP32C3
-          - name: XIAO ESP32-S3
-            fqbn: esp32:esp32:XIAO_ESP32S3
-          - name: XIAO ESP32-C5
-            fqbn: esp32:esp32:XIAO_ESP32C5
-          - name: XIAO ESP32-C6
-            fqbn: esp32:esp32:XIAO_ESP32C6
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,6 +34,6 @@ jobs:
       - name: Install pinned build dependencies
         run: python3 tools/check_build_dependencies.py --install
 
-      - name: Compile ${{ matrix.name }}
+      - name: Compile M5Stack Atom Echo
         run: |
-          arduino-cli compile --fqbn "${{ matrix.fqbn }}" esp32-birdnet-mic
+          arduino-cli compile --fqbn "esp32:esp32:m5stack_atom" esp32-birdnet-mic

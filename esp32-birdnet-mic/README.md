@@ -1,22 +1,22 @@
 <p align="center">
-  <img src="../assets/birdlogo.png" alt="ESP32 RTSP Mic for BirdNET-Go / BirdNET-Pi" width="240" />
+  <img src="../assets/birdlogo.png" alt="M5 Atom Echo RTSP Mic for BirdNET-Go / BirdNET-Pi" width="240" />
 </p>
 
 # birdnet-esp32-rtsp-mic Firmware
 
-Arduino firmware for Seeed XIAO ESP32 I2S microphones that serve **mono 16-bit PCM/L16** audio over
-**RTSP** for **BirdNET-Go** and **BirdNET-Pi**. It also provides a Web UI, JSON API, MQTT telemetry,
-and Home Assistant MQTT Discovery.
+Arduino firmware for the **M5Stack Atom Echo** (also sold as **Atom Voice**) that reads its onboard
+**SPM1423 PDM microphone** and serves **mono 16-bit PCM/L16** audio over **RTSP** for **BirdNET-Go**
+and **BirdNET-Pi**. It also provides a Web UI, JSON API, MQTT telemetry, and Home Assistant MQTT
+Discovery.
 
-- Latest firmware: **v1.23** (2026-09-17; C6 OTA smoke test passed, extended validation pending)
-- Build targets: Seeed Studio **XIAO ESP32-C3**, **XIAO ESP32-S3**, **XIAO ESP32-C5**, **XIAO ESP32-C6**
-- Runtime-tested board: Seeed Studio **XIAO ESP32-C6**
-- Recommended microphone: **Adafruit SPH0645LM4H** in selectable MSB / left-justified mode
-- Legacy microphones: **ICS-43434/INMP441** in default Philips I2S mode
-- User-facing overview and wiring: `../README.md`
-- Changelog: `CHANGELOG.md`
-- Web flasher: **https://esp32mic.msmeteo.cz**
-- Manual OTA firmware: `../manual-ota-firmware/firmware-app-<board>.bin` (`firmware-app.bin` remains the C6 alias)
+This is a personal fork retargeted to a single board. It is based on the multi-board
+[esp32-birdnet-mic](https://github.com/Sukecz/esp32-birdnet-mic) project by **@Sukecz**, which
+targets Seeed XIAO ESP32 boards with external I2S microphones; see that project for the original
+multi-board web flasher and OTA release process, which this fork does not carry.
+
+- Build target: **M5Stack Atom Echo / Atom Voice** (ESP32-PICO-D4)
+- Microphone: onboard **SPM1423 PDM** mic (no wiring, no format selection)
+- Changelog: `CHANGELOG.md` (history predates the Atom Echo port; see git log for this fork's changes)
 - License: MIT (`../LICENSE`)
 
 ## Important URLs
@@ -42,11 +42,12 @@ rtsp://<device-hostname>.local:8554/audio2
 ```
 
 The API and Web UI publish `/audio1` and `/audio2`. Use `/audio1` in new configurations. `/audio`
-remains available only as a compatibility alias for stream 1.
+remains available only as a compatibility alias for stream 1. Only one RTSP client is accepted at a
+time (on either stream).
 
 ## First Boot
 
-1. Flash with the web flasher or build manually.
+1. Build and flash the sketch (see **Build And Flash Manually** below).
 2. The device starts WiFiManager AP **ESP32-RTSP-Mic-AP**.
 3. Connect to the AP and open `192.168.4.1` if the captive portal does not open automatically.
 4. Save Wi-Fi credentials.
@@ -54,222 +55,46 @@ remains available only as a compatibility alias for stream 1.
 
 Default hostname is unique per device, for example `esp32mic-a1b2c3`.
 
-## What's New In v1.22
-
-- RTSP/TCP writes now use explicit non-blocking socket sends with a controlled ten-second recovery
-  window, reducing unnecessary FFmpeg reconnects during temporary transport backpressure.
-- Recovered stalls longer than 250 ms and failed clients flush queued stale audio so the stream
-  resumes at the live edge.
-- The default Wi-Fi TX power is reduced to 15 dBm after higher-power C6 testing increased die
-  temperature without preventing transport stalls.
-- Thermal shutdown now requires three consecutive five-second samples at the configured limit,
-  while an excursion 10 C above the limit still stops streaming immediately.
-
-## What's New In v1.21
-
-- Outputs a 256-fs I2S master clock on physical XIAO pin D7 for experimental PCM1808 ADC setups.
-- Continues to read the left I2S slot as mono, so existing ICS-43434 and INMP441 wiring is unchanged.
-- MQTT can retry a disconnected broker with a bounded timeout during an active RTSP stream.
-
-## What's New In v1.20
-
-- Version-only test build for validating the improved OTA installation progress and automatic
-  browser reconnection workflow from v1.18. There are no functional changes compared with v1.18.
-
-## What's New In v1.18
-
-- OTA installation immediately shows a blocking progress state, protects against accidentally
-  leaving the page, and reconnects automatically after the device reboots.
-- Client-requested RTSP TEARDOWN events now log session duration, packet and RTP timing, transport,
-  client address, CSeq, Wi-Fi RSSI, and User-Agent for easier correlation with BirdNET-Go.
-
-## What's New In v1.17
-
-- Version-only test build for validating the complete Web UI automatic OTA workflow from v1.16.
-  There are no functional firmware changes compared with v1.16.
-
-## What's New In v1.16
-
-- Audio configuration changes stop the producer before publishing a new buffer size, preventing the
-  producer from reading a larger block into the previous smaller allocation.
-- Firmware availability checks run in a background task, and MQTT reconnect attempts are deferred
-  while RTSP is streaming, so unavailable internet or MQTT services do not block the stream loop.
-- HPF cutoff values are kept below 45% of the active sample rate, preventing repeated coefficient
-  resets for invalid rate/cutoff combinations.
-- Persisted settings are validated at boot and invalid values are replaced with safe defaults instead
-  of risking allocation failures or restart loops. Factory defaults now reliably re-enable time sync.
-- Default gain is 1.5; the default packet buffer remains 512 samples.
-
-## What's New In v1.15
-
-- Automatic OTA now checks `ota-version.txt` and compares `major.minor` versions before downloading.
-  The install endpoint blocks equal, older, malformed, or unavailable versions, so an unnecessary
-  firmware download cannot interrupt the stream.
-- The main Web UI shows a prominent update banner only when a newer version is confirmed. The
-  firmware page separately reports update available, up to date, or check failed.
-- Offline operation remains supported: a failed check is cached for one hour, the main UI makes no
-  automatic retry in the same page session, and manual app-only firmware upload remains available.
-
-## What's New In v1.14
-
-- Fixed long-running packet-rate calculations to use 64-bit arithmetic. The previous 32-bit
-  multiplication overflowed after about 12.7 hours at 48 kHz/512 samples and caused false automatic
-  I2S recovery.
-- Increased the internal audio ring-buffer reserve to at least 32 KiB for normal packet sizes while
-  retaining the 512-sample RTP/UDP packet default.
-- Extended the TCP write tolerance from 30 ms to 100 ms and added failure diagnostics for partial
-  progress, elapsed time, available TCP space, ring-buffer use, connection state, and Wi-Fi RSSI.
-
-## What's New In v1.13
-
-- Migrated microphone capture from the deprecated legacy I2S API to the current channel-based
-  `i2s_std` API without changing the existing BCLK/WS/SD wiring or adding an MCLK output.
-- RTSP-over-TCP now combines the interleaved framing header, RTP header, and audio payload before
-  writing, reducing calls into the TCP stack.
-- Web UI request handling is capped at 50 Hz so an open browser tab does not monopolize the main
-  loop while audio is streaming.
-- The default audio packet buffer remains **512 samples** for BirdNET-Pi/UDP compatibility.
-
-## What's New In v1.12
-
-- Automatic OTA now uses the board-specific stable latest alias (`firmware-app-c3.bin`,
-  `firmware-app-s3.bin`, `firmware-app-c5.bin`, or `firmware-app-c6.bin`). It no longer builds a URL
-  from the currently installed version, which prevented older devices from discovering a release.
-- The automatic OTA URL is compiled from the board profile, is not editable in the Web UI, and must
-  exactly match that board. Unsupported generic builds no longer fall back to the C6 image.
-- OTA pull validates HTTP status, content type, content length, download completeness, app partition
-  capacity, and premature connection closure before accepting the update.
-- Release validation checks version format, board mappings, stable/versioned/manual binary equality,
-  C6 compatibility aliases, and public firmware checksums.
-
-## What's New In v1.11
-
-- Fixed I2S pin selection for XIAO ESP32-C3/S3/C5 builds. Arduino exposes `D1`/`D2`/`D3` as C++
-  constants, so the previous preprocessor test did not detect them and incorrectly selected the C6
-  fallback GPIOs (`21/1/2`) for every board.
-- I2S startup logs now include the active BCLK/WS/SD GPIO numbers for wiring diagnostics.
-
-## What's New In v1.10.1
-
-- OTA update endpoints now require the same mutation header as other state-changing Web UI/API calls.
-- Automatic OTA URLs were generated from the compiled firmware version. This behavior was replaced
-  in v1.12 because it pinned devices to their already-installed release.
-- OTA rejects oversized or merged USB firmware images, including 4 MB and 8 MB full-flash files.
-- GitHub Actions compile-checks all supported XIAO ESP32-C3/S3/C5/C6 targets.
-
-## What's New In v1.10.0
-
-- Added board profiles for Seeed Studio XIAO ESP32-C3, XIAO ESP32-S3, XIAO ESP32-C5, and XIAO ESP32-C6.
-- I2S wiring now uses the same physical XIAO pin labels on supported boards: `D3` for BCLK, `D1`
-  for LRCLK/WS, and `D2` for data.
-- XIAO ESP32-C6 keeps firmware-controlled external antenna selection through GPIO3/GPIO14.
-- XIAO ESP32-C3, XIAO ESP32-S3, and XIAO ESP32-C5 builds do not touch antenna-control GPIOs.
-- `/api/status`, MQTT device metadata, and the OTA page expose the compiled board profile.
-- Web flasher artifacts now include separate C3/S3/C5/C6 images and a manifest that lets ESP Web
-  Tools select firmware by connected chip family.
-
-## What's New In v1.9.3
-
-- Default buffer is now **512 samples** after BirdNET-Pi UDP testing showed stutter with 1024-sample
-  packets.
-- BirdNET-Pi UDP compatibility is improved by handling the advertised RTCP port and adding standard
-  RTP metadata expected by ffmpeg-based clients.
-- UDP was validated with a clean Nachtzuster/BirdNET-Pi install using `/audio2` in BirdNET-Pi mode.
-- Sample rate settings now accept **8,000-192,000 Hz** in both the Web UI and API.
-- Audio settings are saved only after the I2S pipeline restarts successfully; unsupported settings
-  roll back immediately instead of silently reverting later.
-- Web UI dirty-field highlighting now clears reliably after successful saves and stays visible when
-  a save is rejected.
-
 ## Hardware
 
-### I2S Wiring
+The Atom Echo's SPM1423 microphone is a PDM part wired internally to fixed GPIOs; there is nothing
+to wire up and no microphone-format setting:
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../assets/connection-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="../assets/connection.png">
-  <img alt="Wiring diagram for a XIAO ESP32-C6 and I2S microphone; ICS-43434 module shown" src="../assets/connection.png">
-</picture>
+| Signal | GPIO | Notes |
+|---|:--:|---|
+| PDM clock | 19 | Shared with the board's internal speaker bus |
+| PDM data (mic in) | 23 | Dedicated microphone data line |
 
-*ICS-43434 module shown; use the same connections for SPH0645LM4H and INMP441.*
-
-Use the same physical XIAO pin labels on every supported board. The underlying GPIO numbers differ
-by chip.
-
-| Mic signal | XIAO pin label | C3 GPIO | S3 GPIO | C5 GPIO | C6 GPIO | Code define |
-|---:|:--:|:--:|:--:|:--:|:--:|---|
-| **BCLK / SCK** | **D3** | 5 | 4 | 7 | 21 | `I2S_BCLK_PIN` |
-| **LRCLK / WS** | **D1** | 3 | 2 | 0 | 1 | `I2S_LRCLK_PIN` |
-| **SD / DOUT** | **D2** | 4 | 3 | 25 | 2 | `I2S_DOUT_PIN` |
-| **MCLK / SCKI** | **D7** | 20 | 44 | 12 | 17 | `I2S_MCLK_PIN` |
-| **VDD** | 3V3 | - | - | - | - | Power |
-| **GND** | GND | - | - | - | - | Ground |
-
-Use the same physical wiring for all supported microphones and power them from **3.3 V**. Connect
-`L/R` or `SEL` to **GND** because the firmware reads the left channel. Then select the matching
-format:
-
-- **Adafruit SPH0645LM4H (recommended for new builds):** MSB / left-justified; select it in
-  **Audio -> Microphone format** or set
-  API key `mic_format` to `1`.
-- **ICS-43434 / INMP441 (legacy):** standard Philips I2S; firmware default.
-
-SPH0645 support was tested on contributor hardware. ICS-43434 and INMP441 remain supported for
-existing builds.
-
-The wrong format only produces incorrectly decoded audio; it does not change the wiring or damage
-the microphone. Incorrect wiring or 5 V power can still cause damage.
-
-Firmware v1.21 outputs MCLK at 256 times the configured sample rate. This allows experimental
-PCM1808 ADC hardware to run in slave I2S mode with its left input captured by the existing mono
-pipeline. The PCM1808 signal level, I2S Shift, analog gain, and noise performance still require
-validation on the complete microphone hardware before it is considered a tested reference setup.
-
-### XIAO Antenna Paths
-
-The firmware selects the external antenna path on XIAO ESP32-C6:
-
-```text
-GPIO3  -> LOW
-GPIO14 -> HIGH
-```
-
-Use an external 2.4 GHz antenna for reliable streaming. Weak Wi-Fi increases retries, heat, and the
-chance of audio dropouts. XIAO ESP32-C3 and XIAO ESP32-S3 expose a U.FL antenna connector without a
-documented firmware GPIO switch. XIAO ESP32-C5 has a dedicated Wi-Fi/BT antenna connector; attach
-the included antenna before use. If your C6 hardware uses the internal antenna path, adjust the
-GPIO3/GPIO14 block in `setup()`.
+GPIO22 (speaker output) and GPIO33 (shared bus LRCLK) are used by the board's onboard speaker path
+and are not touched by this firmware. The board has a fixed onboard PCB antenna; there is no
+external antenna connector or firmware-controlled RF switch.
 
 ## Runtime Defaults
 
-- Sample rate: 48 kHz
+- Sample rate: 48 kHz (bench-verify this holds cleanly over PDM on your unit; drop it if not)
 - Audio format: mono 16-bit PCM/L16
-- Microphone format: ICS-43434 / INMP441 (Philips I2S)
 - Gain: 1.5
 - Buffer: 512 samples
-- I2S shift: 12 bits
+- I2S shift: 0 bits (PDM RX already delivers full-scale 16-bit PCM)
 - High-pass filter: ON, 500 Hz
 - Wi-Fi TX power: about 19.5 dBm
 - CPU: 160 MHz
 - Thermal shutdown: 80 C, protection ON
-- Max RTSP clients: 2
+- Max RTSP clients: 1
 - mDNS: ON
 - Time sync: ON
-- XIAO ESP32-C6 antenna path: external antenna ON
-- XIAO ESP32-C3/S3/C5 antenna path: no firmware GPIO switching
-- OTA password: none in the default public build
+- OTA password: none by default
 
-The sample-rate setting accepts 8,000-192,000 Hz. 192 kHz is allowed by the UI/API for users who
-want to test ultrasonic-capable microphones, but bandwidth, CPU load, I2S stability, and BirdNET
-backend support should be verified on the target setup.
+The sample-rate setting accepts 8,000-192,000 Hz in the UI/API, but PDM RX on the ESP32-PICO-D4 may
+not reliably hold the higher end of that range; verify on real hardware before relying on it.
 
 ## Web UI
 
 The Web UI runs on port **80** and includes:
 
 - Status: IP, RSSI, uptime, heap, server state, stream states, packet rates.
-- Streams: URLs for `/audio1` and `/audio2`, enable/disable, max clients, BirdNET target.
-- Audio: microphone format, sample rate, gain, buffer size, I2S shift, high-pass filter, signal level.
+- Streams: URLs for `/audio1` and `/audio2`, enable/disable, BirdNET target.
+- Audio: sample rate, gain, buffer size, I2S shift, high-pass filter, signal level.
 - Audio API diagnostics: producer state, ring-buffer capacity/chunks/drops/flushes, I2S errors,
   and RTSP write stalls/timeouts.
 - Time & Network: NTP state, time offset, mDNS, stream schedule, optional deep sleep, Wi-Fi actions.
@@ -286,23 +111,9 @@ Open:
 http://<device-ip>/ota
 ```
 
-You have two choices:
-
-1. **Automatic update**: use this when the device has internet access. The device downloads
-   the board-specific app-only firmware from `esp32mic.msmeteo.cz` and installs it.
-2. **Upload compiled file**: use this when the device has no internet access. Upload the app-only
-   `.bin` file from your computer. The current release file is
-   the matching app-only file from `../manual-ota-firmware/`.
-
-Automatic update uses a board-specific stable plain HTTP URL, for example
-`http://esp32mic.msmeteo.cz/firmware-app-c3.bin`. The build/deploy workflow replaces that alias with
-the latest published app image on every release. The URL is fixed by the compiled board profile and
-cannot be edited in the OTA page, preventing a C3/S3/C5/C6 device from pulling another board's image.
-Unsupported generic builds must use manual OTA with a matching app-only file.
-
-The server must provide these files over plain HTTP without redirects, with an octet-stream content
-type and a valid content length. HTTPS/TLS does not fit in the tight XIAO ESP32-C3/C6 default app
-partitions. `firmware-app.bin` remains a C6 compatibility alias for older firmware.
+This personal build has no hosted update server, so the automatic "check for update" path is
+disabled. Use **Upload compiled file** to push a `.bin` you built yourself with `arduino-cli compile
+--output-dir` or the Arduino IDE's "Export compiled binary."
 
 - Logs: ring buffer view and download.
 - Actions: RTSP server ON/OFF, reset I2S, reconnect Wi-Fi, reboot, restore defaults.
@@ -317,6 +128,7 @@ partitions. `firmware-app.bin` remains a C6 compatibility alias for older firmwa
 - BirdNET-Pi target uses RTP/UDP when the client provides UDP ports.
 - RTSP keep-alive via `GET_PARAMETER` is supported.
 - Inactive non-streaming sessions time out after about 30 seconds.
+- Only one client slot exists; a second connection attempt is refused until the first disconnects.
 
 ### Verify With ffmpeg Tools
 
@@ -386,10 +198,8 @@ Examples of request bodies:
 ```text
 key=stream1_enabled&value=on
 key=stream2_enabled&value=off
-key=max_clients&value=2
 key=stream1_target&value=0
 key=stream2_target&value=1
-key=mic_format&value=1
 key=hp_enable&value=on
 key=hp_cutoff&value=600
 ```
@@ -400,9 +210,6 @@ Target values:
 0 = BirdNET-Go
 1 = BirdNET-Pi
 ```
-
-Microphone-format values are `0` for ICS-43434/INMP441 Philips I2S (default) and `1` for Adafruit
-SPH0645 MSB / left-justified.
 
 `/api/status` includes stream URLs and state, including:
 
@@ -421,7 +228,6 @@ s1_streaming
 s2_streaming
 s1_pkt_rate
 s2_pkt_rate
-max_clients
 ```
 
 `/api/audio_status` includes audio pipeline diagnostics:
@@ -459,30 +265,29 @@ MQTT password is stored in device flash in plain text NVS.
 ### Arduino IDE
 
 1. Open `esp32-birdnet-mic/esp32-birdnet-mic.ino`.
-2. Install an ESP32 Arduino core with support for the selected XIAO target.
-3. Select the matching board, for example *XIAO_ESP32C3*, *XIAO_ESP32S3*, *XIAO_ESP32C5*, or
-   *XIAO_ESP32C6*.
+2. Install the ESP32 Arduino core (this fork is pinned to core `3.3.8`; see `../build-dependencies.json`).
+3. Select board **M5Atom** under ESP32 Arduino boards (FQBN `esp32:esp32:m5stack_atom`; there is a
+   separate **M5AtomS3** entry for the S3 variant — Atom Echo is the original ESP32-PICO-D4 board).
 4. Compile and upload over USB.
 
-The sketch folder contains `build_opt.h`. Keep it next to the `.ino`; Arduino IDE uses it
-automatically to keep the tight XIAO ESP32-C3/C6 default 1.2 MB app partitions below the size limit.
+The sketch folder contains `build_opt.h`, which Arduino IDE uses automatically to trim unused
+exception/unwind metadata.
 
 ### arduino-cli
 
 ```bash
-arduino-cli compile --fqbn <BOARD_FQBN> esp32-birdnet-mic
-arduino-cli upload -p <PORT> --fqbn <BOARD_FQBN> esp32-birdnet-mic
-```
-
-From outside the repository, use the full sketch path:
-
-```bash
-arduino-cli compile --fqbn <BOARD_FQBN> esp32-birdnet-mic
+arduino-cli compile --fqbn esp32:esp32:m5stack_atom esp32-birdnet-mic
+arduino-cli upload -p <PORT> --fqbn esp32:esp32:m5stack_atom esp32-birdnet-mic
 ```
 
 ### PlatformIO
 
-Typical targets are board-specific Arduino environments, for example `env:xiao_esp32c6`:
+```ini
+[env:m5stack-atom]
+platform = espressif32
+board = m5stack-atom
+framework = arduino
+```
 
 ```bash
 pio run -t upload
@@ -509,8 +314,7 @@ Main keys:
 sampleRate       Audio sample rate
 gainFactor      Audio gain
 bufferSize       Samples per packet/buffer profile
-shiftBits        I2S right shift before gain
-micFormat        I2S sample alignment: 0 = Philips, 1 = MSB / left-justified
+shiftBits        Pre-gain right shift
 hpEnable         High-pass enable
 hpCutoff         High-pass cutoff Hz
 wifiTxDbm        Wi-Fi TX power
@@ -533,8 +337,7 @@ ohLatched        Persisted thermal latch
 ```
 
 Apply changes through Web UI or API. Audio-related updates call `restartI2S()` when needed.
-Current validation ranges include `sampleRate=8000..192000`, `bufferSize=256..8192`, and
-`micFormat=0..1`.
+Current validation ranges include `sampleRate=8000..192000` and `bufferSize=256..8192`.
 
 ## RTSP Implementation Notes
 
@@ -552,15 +355,13 @@ Current validation ranges include `sampleRate=8000..192000`, `bufferSize=256..81
 - Aim for Wi-Fi RSSI better than about **-75 dBm**.
 - Increase buffer size in RF-noisy environments; this adds latency but improves stability.
 - If audio is noisy while Wi-Fi is otherwise stable, try lowering Wi-Fi TX power before changing audio settings.
-- Keep I2S wires short and away from the ESP32 RF area.
-- Use shielded cable for longer microphone runs.
 - Thermal protection disables RTSP when the chip reaches the configured limit; the latch survives reboot until acknowledged in the Web UI.
 
 ## Security
 
 - Keep the device on a trusted LAN.
 - Do not expose HTTP, RTSP, or OTA to the public internet.
-- The default public build has no OTA password.
+- The default build has no OTA password.
 - If you build your own firmware for untrusted networks, set an OTA password before publishing it.
 - Mutating API endpoints require `POST` and `X-ESP32MIC-CSRF: 1`, but read endpoints are not globally authenticated by default.
 
@@ -568,13 +369,13 @@ Current validation ranges include `sampleRate=8000..192000`, `bufferSize=256..81
 
 - No TLS or built-in user authentication for the Web UI/API.
 - mDNS depends on multicast support in your LAN and often does not work across VLANs, guest networks, or Docker bridge networks.
-- The firmware is primarily runtime-tested on Seeed Studio XIAO ESP32-C6 with ICS-43434; C3/S3/C5
-  builds are compile-verified in Arduino ESP32 core 3.3.8. SPH0645 support was tested on contributor
-  hardware.
+- The PDM microphone path is new to this fork and has not yet been runtime-validated at all sample
+  rates; bench-test before relying on it.
 
 ## Credits
 
-- Author: **@Sukecz**
+- Original multi-board project: **@Sukecz** ([esp32-birdnet-mic](https://github.com/Sukecz/esp32-birdnet-mic))
+- Atom Echo port: this fork
 
 ## License
 

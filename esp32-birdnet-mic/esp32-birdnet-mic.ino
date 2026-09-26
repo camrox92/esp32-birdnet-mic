@@ -2,6 +2,7 @@
 #include <esp_wifi.h>
 #include <WiFiManager.h>
 #include "driver/i2s_std.h"
+#include "driver/i2s_pdm.h"
 #include <ArduinoOTA.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
@@ -28,42 +29,19 @@ const char* FW_VERSION_STR = FW_VERSION;
 // Build timestamp for diagnostics (compile time)
 const char* FW_BUILD_DATE_STR = __DATE__ " " __TIME__;
 
-#if defined(ARDUINO_XIAO_ESP32C3)
-#define XIAO_BOARD_ID "xiao-esp32c3"
-#define XIAO_BOARD_NAME "XIAO ESP32-C3"
-#define XIAO_CHIP_FAMILY "ESP32-C3"
-#define XIAO_OTA_ARTIFACT "firmware-app-c3.bin"
-#define XIAO_HAS_RF_SWITCH 0
-#elif defined(ARDUINO_XIAO_ESP32S3)
-#define XIAO_BOARD_ID "xiao-esp32s3"
-#define XIAO_BOARD_NAME "XIAO ESP32-S3"
-#define XIAO_CHIP_FAMILY "ESP32-S3"
-#define XIAO_OTA_ARTIFACT "firmware-app-s3.bin"
-#define XIAO_HAS_RF_SWITCH 0
-#elif defined(ARDUINO_XIAO_ESP32C5)
-#define XIAO_BOARD_ID "xiao-esp32c5"
-#define XIAO_BOARD_NAME "XIAO ESP32-C5"
-#define XIAO_CHIP_FAMILY "ESP32-C5"
-#define XIAO_OTA_ARTIFACT "firmware-app-c5.bin"
-#define XIAO_HAS_RF_SWITCH 0
-#elif defined(ARDUINO_XIAO_ESP32C6)
-#define XIAO_BOARD_ID "xiao-esp32c6"
-#define XIAO_BOARD_NAME "XIAO ESP32-C6"
-#define XIAO_CHIP_FAMILY "ESP32-C6"
-#define XIAO_OTA_ARTIFACT "firmware-app-c6.bin"
-#define XIAO_HAS_RF_SWITCH 1
-#else
-#define XIAO_BOARD_ID "esp32-generic"
-#define XIAO_BOARD_NAME "ESP32 generic"
-#define XIAO_CHIP_FAMILY "ESP32"
-#define XIAO_OTA_ARTIFACT ""
-#define XIAO_HAS_RF_SWITCH 0
-#endif
+// Single-board build: M5Stack Atom Echo (ESP32-PICO-D4) with its onboard
+// SPM1423 PDM microphone. No auto-update host is hosted for this personal
+// fork, so the OTA artifact string stays empty (disables the "check for
+// update" flow in the Web UI; manual firmware upload via /ota still works).
+#define ATOM_ECHO_BOARD_ID "m5stack-atom-echo"
+#define ATOM_ECHO_BOARD_NAME "M5Stack Atom Echo"
+#define ATOM_ECHO_CHIP_FAMILY "ESP32"
+#define ATOM_ECHO_OTA_ARTIFACT ""
 
-const char* FW_BOARD_ID_STR = XIAO_BOARD_ID;
-const char* FW_BOARD_NAME_STR = XIAO_BOARD_NAME;
-const char* FW_CHIP_FAMILY_STR = XIAO_CHIP_FAMILY;
-const char* FW_OTA_ARTIFACT_STR = XIAO_OTA_ARTIFACT;
+const char* FW_BOARD_ID_STR = ATOM_ECHO_BOARD_ID;
+const char* FW_BOARD_NAME_STR = ATOM_ECHO_BOARD_NAME;
+const char* FW_CHIP_FAMILY_STR = ATOM_ECHO_CHIP_FAMILY;
+const char* FW_OTA_ARTIFACT_STR = ATOM_ECHO_OTA_ARTIFACT;
 
 // Time / NTP
 const char* NTP_SERVER_1 = "pool.ntp.org";
@@ -91,7 +69,7 @@ bool mdnsRunning = false;
 #define DEFAULT_SAMPLE_RATE 48000
 #define DEFAULT_GAIN_FACTOR 1.5f
 #define DEFAULT_BUFFER_SIZE 512    // Balanced default; safer for BirdNET-Pi UDP than 1024-sample packets
-#define DEFAULT_WIFI_TX_DBM 15.0f  // Stable default; higher power adds substantial heat on C6
+#define DEFAULT_WIFI_TX_DBM 15.0f  // Stable default
 #define DEFAULT_MQTT_PORT 1883
 #define DEFAULT_MQTT_PUBLISH_INTERVAL_SEC 60
 // High-pass filter defaults (to remove low-frequency rumble)
@@ -109,24 +87,20 @@ static const float OVERHEAT_EMERGENCY_MARGIN_C = 10.0f;
 static const unsigned long TEMPERATURE_CHECK_INTERVAL_MS = 5000UL;
 
 // -- Pins
-#if defined(ARDUINO_XIAO_ESP32C3) || defined(ARDUINO_XIAO_ESP32S3) || \
-    defined(ARDUINO_XIAO_ESP32C5) || defined(ARDUINO_XIAO_ESP32C6)
-static constexpr int I2S_MCLK_PIN = D7;
-static constexpr int I2S_BCLK_PIN = D3;
-static constexpr int I2S_LRCLK_PIN = D1;
-static constexpr int I2S_DOUT_PIN = D2;
-#else
-static constexpr int I2S_MCLK_PIN = 7;
-static constexpr int I2S_BCLK_PIN = 21;
-static constexpr int I2S_LRCLK_PIN = 1;
-static constexpr int I2S_DOUT_PIN = 2;
-#endif
+// Atom Echo's onboard SPM1423 PDM microphone. Fixed by the board, not
+// user wiring: PDM clock doubles as the shared audio-bus bit clock, and
+// the data pin is the mic's dedicated input line. GPIO22 (speaker output)
+// and GPIO33 (shared bus LRCLK, used by the speaker path) are unused here.
+static constexpr int I2S_PDM_CLK_PIN = 19;
+static constexpr int I2S_PDM_DATA_PIN = 23;
 
 // -- Servers
 WiFiServer rtspServer(8554);
 WiFiClient rtspClient;
 
-static const uint8_t MAX_CLIENTS = 3;
+// Single-client personal build: only one RTSP listener is ever expected at
+// a time (on either /audio1 or /audio2).
+static const uint8_t MAX_CLIENTS = 1;
 
 enum TransportMode : uint8_t {
     TRANSPORT_TCP = 0,
@@ -137,13 +111,6 @@ enum StreamTarget : uint8_t {
     STREAM_TARGET_BIRDNET_GO = 0,
     STREAM_TARGET_BIRDNET_PI = 1
 };
-
-enum MicFormat : uint8_t {
-    MIC_FORMAT_PHILIPS = 0,  // ICS-43434 / INMP441
-    MIC_FORMAT_MSB = 1       // Adafruit SPH0645LM4H
-};
-
-static constexpr uint8_t DEFAULT_MIC_FORMAT = MIC_FORMAT_PHILIPS;
 
 struct StreamProfileConfig {
     uint8_t target = STREAM_TARGET_BIRDNET_GO;
@@ -195,17 +162,12 @@ struct ClientSession {
     }
 };
 
-static const char* micFormatName(uint8_t format) {
-    return format == MIC_FORMAT_MSB ? "SPH0645/MSB" : "ICS43434/Philips";
-}
-
 ClientSession clients[MAX_CLIENTS];
 StreamProfileConfig streamProfiles[2] = {
     {STREAM_TARGET_BIRDNET_GO},
     {STREAM_TARGET_BIRDNET_PI},
 };
 bool streamEnabled[2] = {true, false};
-uint8_t maxActiveClients = 2;
 
 struct StreamStats {
     uint8_t clientCount = 0;
@@ -232,8 +194,7 @@ uint32_t rtpSSRC = 0x43215678;
 unsigned long lastRTSPActivity = 0;
 
 // -- Buffers
-int32_t* i2s_32bit_buffer = nullptr;
-int16_t* i2s_16bit_buffer = nullptr;
+int16_t* i2s_16bit_buffer = nullptr;  // raw PDM RX read buffer, processed in place
 int16_t* i2s_16bit_network_buffer = nullptr;
 uint8_t* rtpPacketScratch = nullptr;
 i2s_chan_handle_t i2s_rx_handle = nullptr;
@@ -252,8 +213,10 @@ bool rtspServerEnabled = true;
 uint32_t currentSampleRate = DEFAULT_SAMPLE_RATE;
 float currentGainFactor = DEFAULT_GAIN_FACTOR;
 uint16_t currentBufferSize = DEFAULT_BUFFER_SIZE;
-uint8_t i2sShiftBits = 12;  // (1) compile-time default respected on first boot
-uint8_t micFormat = DEFAULT_MIC_FORMAT;
+// PDM RX delivers full-scale 16-bit PCM directly, so no pre-gain shift is
+// needed by default (unlike the external 32-bit-frame I2S mics this project
+// used to support, which needed a shift to extract their significant bits).
+uint8_t i2sShiftBits = 0;  // compile-time default respected on first boot
 
 // -- Audio metering / clipping diagnostics
 uint16_t lastPeakAbs16 = 0;       // last block peak absolute value (0..32767)
@@ -1964,9 +1927,8 @@ void loadAudioSettings() {
     currentSampleRate = audioPrefs.getUInt("sampleRate", DEFAULT_SAMPLE_RATE);
     currentGainFactor = audioPrefs.getFloat("gainFactor", DEFAULT_GAIN_FACTOR);
     currentBufferSize = audioPrefs.getUShort("bufferSize", DEFAULT_BUFFER_SIZE);
-    // (1) respect compile-time default 12 on first boot
+    // respect compile-time default on first boot
     i2sShiftBits = audioPrefs.getUChar("shiftBits", i2sShiftBits);
-    micFormat = audioPrefs.getUChar("micFormat", DEFAULT_MIC_FORMAT);
     autoRecoveryEnabled = audioPrefs.getBool("autoRecovery", true);
     scheduledResetEnabled = audioPrefs.getBool("schedReset", false);
     resetIntervalHours = audioPrefs.getUInt("resetHours", 24);
@@ -2008,7 +1970,6 @@ void loadAudioSettings() {
     streamProfiles[1].target = (uint8_t)audioPrefs.getUChar("s2Target", STREAM_TARGET_BIRDNET_PI);
     streamEnabled[0] = audioPrefs.getBool("s1Enabled", true);
     streamEnabled[1] = audioPrefs.getBool("s2Enabled", false);
-    maxActiveClients = (uint8_t)audioPrefs.getUChar("maxClients", 2);
     if (streamScheduleStartMin > 1439) { streamScheduleStartMin = 0; settingsRepaired = true; }
     if (streamScheduleStopMin > 1439) { streamScheduleStopMin = 0; settingsRepaired = true; }
     uint32_t ohLimit = audioPrefs.getUInt("ohThresh", DEFAULT_OVERHEAT_LIMIT_C);
@@ -2035,11 +1996,7 @@ void loadAudioSettings() {
         settingsRepaired = true;
     }
     if (i2sShiftBits > 24U) {
-        i2sShiftBits = 12;
-        settingsRepaired = true;
-    }
-    if (micFormat > MIC_FORMAT_MSB) {
-        micFormat = DEFAULT_MIC_FORMAT;
+        i2sShiftBits = 0;
         settingsRepaired = true;
     }
     if (resetIntervalHours < 1U || resetIntervalHours > 168U) {
@@ -2077,7 +2034,6 @@ void loadAudioSettings() {
     }
     if (streamProfiles[0].target > STREAM_TARGET_BIRDNET_PI) { streamProfiles[0].target = STREAM_TARGET_BIRDNET_GO; settingsRepaired = true; }
     if (streamProfiles[1].target > STREAM_TARGET_BIRDNET_PI) { streamProfiles[1].target = STREAM_TARGET_BIRDNET_PI; settingsRepaired = true; }
-    if (maxActiveClients < 1 || maxActiveClients > MAX_CLIENTS) { maxActiveClients = 2; settingsRepaired = true; }
     mqttApplyClientSettings(false);
 
     // Apply timezone/offset immediately after loading persisted settings so that
@@ -2102,7 +2058,6 @@ void loadAudioSettings() {
                   ", Buffer=" + String(currentBufferSize) +
                   ", WiFiTX=" + String(txShown, 1) + "dBm" +
                   ", shiftBits=" + String(i2sShiftBits) +
-                  ", micFormat=" + String(micFormatName(micFormat)) +
                   ", HPF=" + String(highpassEnabled?"on":"off") +
                   ", HPFcut=" + String(highpassCutoffHz) + "Hz");
 }
@@ -2115,7 +2070,6 @@ void saveAudioSettings() {
     audioPrefs.putFloat("gainFactor", currentGainFactor);
     audioPrefs.putUShort("bufferSize", currentBufferSize);
     audioPrefs.putUChar("shiftBits", i2sShiftBits);
-    audioPrefs.putUChar("micFormat", micFormat);
     audioPrefs.putBool("autoRecovery", autoRecoveryEnabled);
     audioPrefs.putBool("schedReset", scheduledResetEnabled);
     audioPrefs.putUInt("resetHours", resetIntervalHours);
@@ -2156,7 +2110,6 @@ void saveAudioSettings() {
     audioPrefs.putUChar("s2Target", streamProfiles[1].target);
     audioPrefs.putBool("s1Enabled", streamEnabled[0]);
     audioPrefs.putBool("s2Enabled", streamEnabled[1]);
-    audioPrefs.putUChar("maxClients", maxActiveClients);
     audioPrefs.end();
 
     simplePrintln("Settings saved to flash");
@@ -2223,8 +2176,7 @@ void resetToDefaultSettings() {
     currentSampleRate = DEFAULT_SAMPLE_RATE;
     currentGainFactor = DEFAULT_GAIN_FACTOR;
     currentBufferSize = DEFAULT_BUFFER_SIZE;
-    i2sShiftBits = 12;  // compile-time default respected
-    micFormat = DEFAULT_MIC_FORMAT;
+    i2sShiftBits = 0;  // compile-time default respected
 
     autoRecoveryEnabled = true;
     autoThresholdEnabled = true;
@@ -2279,7 +2231,6 @@ void resetToDefaultSettings() {
     isStreaming = false;
     streamEnabled[0] = true;
     streamEnabled[1] = false;
-    maxActiveClients = 2;
     streamProfiles[0].target = STREAM_TARGET_BIRDNET_GO;
     streamProfiles[1].target = STREAM_TARGET_BIRDNET_PI;
 
@@ -2322,24 +2273,6 @@ bool applyAudioConfig(uint32_t newRate, float newGain, uint16_t newBuffer, uint8
     return false;
 }
 
-// Change only the receiver's sample alignment. This does not change GPIO
-// direction, voltage, BCLK frequency, WS frequency, or microphone power.
-bool applyMicFormatConfig(uint8_t newFormat) {
-    if (newFormat > MIC_FORMAT_MSB) return false;
-    if (newFormat == micFormat) return true;
-
-    uint8_t oldFormat = micFormat;
-    micFormat = newFormat;
-    if (restartI2S()) return true;
-
-    simplePrintln("Mic format setting rejected: I2S restart failed, rolling back.");
-    micFormat = oldFormat;
-    if (!restartI2S()) {
-        simplePrintln("Mic format rollback failed; reboot recommended.");
-    }
-    return false;
-}
-
 // Restart I2S with new parameters
 bool restartI2S() {
     simplePrintln("Restarting I2S with new parameters...");
@@ -2351,18 +2284,15 @@ bool restartI2S() {
         i2s_rx_handle = nullptr;
     }
 
-    if (i2s_32bit_buffer) { free(i2s_32bit_buffer); i2s_32bit_buffer = nullptr; }
     if (i2s_16bit_buffer) { free(i2s_16bit_buffer); i2s_16bit_buffer = nullptr; }
     if (i2s_16bit_network_buffer) { free(i2s_16bit_network_buffer); i2s_16bit_network_buffer = nullptr; }
     if (rtpPacketScratch) { free(rtpPacketScratch); rtpPacketScratch = nullptr; }
 
-    i2s_32bit_buffer = (int32_t*)malloc(currentBufferSize * sizeof(int32_t));
     i2s_16bit_buffer = (int16_t*)malloc(currentBufferSize * sizeof(int16_t));
     i2s_16bit_network_buffer = (int16_t*)malloc(currentBufferSize * sizeof(int16_t));
     rtpPacketScratch = (uint8_t*)malloc(16 + (size_t)currentBufferSize * sizeof(int16_t));
-    if (!i2s_32bit_buffer || !i2s_16bit_buffer || !i2s_16bit_network_buffer || !rtpPacketScratch) {
+    if (!i2s_16bit_buffer || !i2s_16bit_network_buffer || !rtpPacketScratch) {
         simplePrintln("FATAL: Memory allocation failed after parameter change!");
-        if (i2s_32bit_buffer) { free(i2s_32bit_buffer); i2s_32bit_buffer = nullptr; }
         if (i2s_16bit_buffer) { free(i2s_16bit_buffer); i2s_16bit_buffer = nullptr; }
         if (i2s_16bit_network_buffer) { free(i2s_16bit_network_buffer); i2s_16bit_network_buffer = nullptr; }
         if (rtpPacketScratch) { free(rtpPacketScratch); rtpPacketScratch = nullptr; }
@@ -2440,9 +2370,10 @@ void audioProducerTask(void* /*arg*/) {
     audioProducerRunning = true;
 
     while (!audioProducerStopRequested) {
+        // PDM RX delivers 16-bit PCM directly; read and process in place.
         size_t bytesRead = 0;
-        esp_err_t result = i2s_channel_read(i2s_rx_handle, i2s_32bit_buffer,
-                                            currentBufferSize * sizeof(int32_t),
+        esp_err_t result = i2s_channel_read(i2s_rx_handle, i2s_16bit_buffer,
+                                            currentBufferSize * sizeof(int16_t),
                                             &bytesRead, 100);
         if (audioProducerStopRequested) break;
 
@@ -2452,7 +2383,7 @@ void audioProducerTask(void* /*arg*/) {
             continue;
         }
 
-        int samplesRead = bytesRead / sizeof(int32_t);
+        int samplesRead = bytesRead / sizeof(int16_t);
         if (samplesRead <= 0) continue;
 
         // If HPF params changed dynamically, recompute in the producer context.
@@ -2463,7 +2394,7 @@ void audioProducerTask(void* /*arg*/) {
         bool clipped = false;
         float peakAbs = 0.0f;
         for (int i = 0; i < samplesRead; i++) {
-            float sample = (float)(i2s_32bit_buffer[i] >> i2sShiftBits);
+            float sample = (float)(i2s_16bit_buffer[i] >> i2sShiftBits);
             if (highpassEnabled) sample = hpf.process(sample);
             float amplified = sample * currentGainFactor;
             float aabs = fabsf(amplified);
@@ -2576,35 +2507,23 @@ bool setup_i2s_driver() {
         return false;
     }
 
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(currentSampleRate),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+    // Atom Echo's SPM1423 is a PDM mic: the ESP32 drives the PDM clock and
+    // reads the single data line, no WS/MCLK involved.
+    i2s_pdm_rx_config_t pdm_cfg = {
+        .clk_cfg = I2S_PDM_RX_CLK_DEFAULT_CONFIG(currentSampleRate),
+        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .mclk = (gpio_num_t)I2S_MCLK_PIN,
-            .bclk = (gpio_num_t)I2S_BCLK_PIN,
-            .ws = (gpio_num_t)I2S_LRCLK_PIN,
-            .dout = I2S_GPIO_UNUSED,
-            .din = (gpio_num_t)I2S_DOUT_PIN,
+            .clk = (gpio_num_t)I2S_PDM_CLK_PIN,
+            .din = (gpio_num_t)I2S_PDM_DATA_PIN,
             .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
+                .clk_inv = false,
             },
         },
     };
-    // PCM1808 slave mode accepts 256/384/512 fs. Mics without an MCLK input
-    // leave D7 unconnected and continue to use the same BCLK/WS/SD wiring.
-    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
-    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
-    if (micFormat == MIC_FORMAT_MSB) {
-        std_cfg.slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(
-            I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
-        std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
-    }
 
-    err = i2s_channel_init_std_mode(i2s_rx_handle, &std_cfg);
+    err = i2s_channel_init_pdm_rx_mode(i2s_rx_handle, &pdm_cfg);
     if (err != ESP_OK) {
-        simplePrintln("I2S pin/mode setup failed: " + String(esp_err_to_name(err)));
+        simplePrintln("I2S PDM RX setup failed: " + String(esp_err_to_name(err)));
         i2s_del_channel(i2s_rx_handle);
         i2s_rx_handle = nullptr;
         return false;
@@ -2618,13 +2537,11 @@ bool setup_i2s_driver() {
         return false;
     }
 
-    simplePrintln("I2S ready: " + String(currentSampleRate) + "Hz, gain " +
+    simplePrintln("I2S PDM RX ready: " + String(currentSampleRate) + "Hz, gain " +
                   String(currentGainFactor, 1) + ", buffer " + String(currentBufferSize) +
                   ", shiftBits " + String(i2sShiftBits) +
-                  ", micFormat " + String(micFormatName(micFormat)) +
-                  ", pins MCLK/BCLK/WS/SD " +
-                  String(I2S_MCLK_PIN) + "/" + String(I2S_BCLK_PIN) + "/" +
-                  String(I2S_LRCLK_PIN) + "/" + String(I2S_DOUT_PIN));
+                  ", pins CLK/DATA " +
+                  String(I2S_PDM_CLK_PIN) + "/" + String(I2S_PDM_DATA_PIN));
     if (!startAudioProducer()) {
         i2s_channel_disable(i2s_rx_handle);
         i2s_del_channel(i2s_rx_handle);
@@ -3112,7 +3029,7 @@ void processRTSP(ClientSession &session, uint8_t clientIdx) {
 }
 
 static int findFreeClientSlot() {
-    for (uint8_t i = 0; i < maxActiveClients; i++) {
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
         if (!clients[i].client.connected()) return (int)i;
     }
     return -1;
@@ -3218,29 +3135,17 @@ void setup() {
     loadBootMetadata();
     simplePrintln("Boot reason: " + rebootReason + ", restart #" + String(restartCounter));
 
-#if XIAO_HAS_RF_SWITCH
-    // Enable external antenna path on XIAO ESP32-C6.
-    pinMode(3, OUTPUT);
-    digitalWrite(3, LOW);
-    Serial.println("RF switch control enabled (GPIO3 LOW)");
-    pinMode(14, OUTPUT);
-    digitalWrite(14, HIGH);
-    Serial.println("External antenna selected (GPIO14 HIGH)");
-#else
     Serial.print("Board profile: ");
-    Serial.print(FW_BOARD_NAME_STR);
-    Serial.println(" (no firmware-controlled RF switch)");
-#endif
+    Serial.println(FW_BOARD_NAME_STR);
 
     // Load settings from flash
     loadAudioSettings();
 
     // Allocate buffers with current size
-    i2s_32bit_buffer = (int32_t*)malloc(currentBufferSize * sizeof(int32_t));
     i2s_16bit_buffer = (int16_t*)malloc(currentBufferSize * sizeof(int16_t));
     i2s_16bit_network_buffer = (int16_t*)malloc(currentBufferSize * sizeof(int16_t));
     rtpPacketScratch = (uint8_t*)malloc(16 + (size_t)currentBufferSize * sizeof(int16_t));
-    if (!i2s_32bit_buffer || !i2s_16bit_buffer || !i2s_16bit_network_buffer || !rtpPacketScratch) {
+    if (!i2s_16bit_buffer || !i2s_16bit_network_buffer || !rtpPacketScratch) {
         simplePrintln("FATAL: Memory allocation failed!");
         ESP.restart();
     }
